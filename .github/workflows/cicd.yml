@@ -17,17 +17,16 @@ jobs:
         run: docker compose build
       - name: Run linter
         run: docker compose run --rm app npm run lint 
-      - name: Run tests
-        run: docker compose run --rm app npm test
+      - name: Run tests and save results
+        shell: bash
+        run: |
+          set -o pipefail
+          docker compose run --rm app npm test | tee test-results.txt  
       - name: Check secret leaks #scan des secrets
         uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Run tests
-        shell: bash
-        run: |
-          set -o pipefail
-          docker compose run --rm app npm test | tee test-results.txt
+      
 
       - name: Upload test results
         if: always()
