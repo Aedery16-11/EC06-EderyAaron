@@ -5,31 +5,27 @@ on:
       - main
       - feature/*
 jobs:
-  run-test-eslint-and-gitleaks:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v6 #Set fetch-depth: 0 to fetch all history for all branches and tags depuis https://github.com/actions/checkout
         with:
           fetch-depth: 0
-      - name: setup Node.js
-        uses: actions/setup-node@v6
-      - name: Install dependencies
-        run: npm install
-      - name: Run app
-        run: npm start &
+      - run: cp .env.dist .env   
+      - name: Build an image from Dockerfile
+        run: docker compose build
+      - name: Run linter
+        run: docker compose run --rm app npm run lint 
       - name: Run tests
-        run: npm test
-      - name: Checkout code
-        uses: actions/checkout@v6
-      - name: Run code lint
-        run: npm run lint
+        run: docker compose run --rm app npm test
       - name: Check secret leaks #scan des secrets
         uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-scan:
+  build:
+    needs: quality
     runs-on: ubuntu-latest
     permissions:
       contents: read # Required to checkout and read repo files
@@ -78,18 +74,36 @@ jobs:
           context: .
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/ec06:latest, ${{ secrets.DOCKERHUB_USERNAME }}/ec06:${{ github.sha }}
+
+      - name: Run tests
+        shell: bash
+        run: |
+          set -o pipefail
+          docker compose run --rm app npm test | tee test-results.txt
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results.txt    
+
   deploy:
-    needs: build-scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # Required to checkout and read repo files
+      security-events: write # Required to upload SARIF files to Security tab
+    needs: build
+    if: github.ref == 'refs/heads/main'
     steps:
-    - name: Deploy to VPS via SSH
-      uses: appleboy/ssh-action@v1.0.3
-      with:
-        host: ${{ secrets.SSH_HOST }}
-        username: ${{ secrets.SSH_USER }}
-        key: ${{ secrets.SSH_KEY }}
-        script: |
-          docker pull aaron279/api-secure:latest
-          docker stop api-secure || true
-          docker rm api-secure || true
-          docker run -d --name api-secure -p 5000:5000 aaron279/api-secure:latest
+      - name: Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+                  docker pull aaron279/ec06:latest
+                  docker stop ec06 || true
+                  docker rm ec06 || true
+                  docker run -d --name ec06 -p 5000:3000 aaron279/ec06:latest    
