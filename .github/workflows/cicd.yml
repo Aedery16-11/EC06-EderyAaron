@@ -1,0 +1,90 @@
+name: CICD
+on: 
+  push:
+    branches:
+      - main
+      - feature/*
+jobs:
+    run-test-eslint-and-gitleaks:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v6 #Set fetch-depth: 0 to fetch all history for all branches and tags depuis https://github.com/actions/checkout
+              with:
+                  fetch-depth: 0
+            - name: setup Node.js
+              uses: actions/setup-node@v6
+            - name: Install dependencies
+              run: npm install
+            - name: Run app
+              run: npm start &
+            - name: Run tests
+              run: npm test
+            - name: Checkout code
+              uses: actions/checkout@v6
+            - name: Run code lint
+              run: npm run lint  
+            - name: Check secret leaks #scan des secrets
+              uses: gitleaks/gitleaks-action@v3
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    build-scan:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read # Required to checkout and read repo files
+            security-events: write # Required to upload SARIF files to Security tab
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v6
+            - name: Build an image from Dockerfile
+              run: docker build -t ec06 .
+            - name: Run Trivy vulnerability scanner
+              uses: aquasecurity/trivy-action@v0.36.0
+              with:
+                image-ref: "ec06"
+                format: "table"
+                exit-code: "1"
+                ignore-unfixed: true
+                vuln-type: "os,library"
+                severity: "CRITICAL,HIGH"
+            - name: Run Trivy vulnerability scanner in IaC mode
+              if: always()
+              uses: aquasecurity/trivy-action@v0.36.0
+              with:
+                scan-ref: "."
+                scan-type: "config"
+                hide-progress: true
+                format: "sarif"
+                output: "trivy-results.sarif"
+                exit-code: "1"
+                severity: "CRITICAL,HIGH"
+                limit-severities-for-sarif: true
+
+            - name: Upload Trivy scan results to GitHub Security tab
+              if: always()
+              uses: github/codeql-action/upload-sarif@v4
+              with:
+                sarif_file: "trivy-results.sarif"
+            - name: Login to Docker Hub
+              uses: docker/login-action@v3
+              with:
+                username: ${{ secrets.DOCKERHUB_USERNAME }}
+                password: ${{ secrets.DOCKERHUB_TOKEN }}
+            - name: Build and push
+              uses: docker/build-push-action@v5
+              if: github.ref == 'refs/heads/main'
+              with:
+                context: .
+                push: true
+                tags: ${{ secrets.DOCKERHUB_USERNAME }}/ec06:latest, ${{ secrets.DOCKERHUB_USERNAME }}/ec06:${{ github.sha }}
+    deploy:
+        needs: build-scan
+        runs-on: ubuntu-latest
+        steps:
+            - name: Deploy to VPS via SSH
+              uses: appleboy/ssh-action@v1.0.3
+              with:
+                host: ${{ secrets.SSH_HOST }}
+                username: ${{ secrets.SSH_USER }}
+                key: ${{ secrets.SSH_KEY }}
